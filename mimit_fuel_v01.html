@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PREZZI BENZINA - V1.0</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Leaflet Geoman (per disegnare i poligoni) -->
+    <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
+    <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
+
+    <!-- Turf.js (per calcoli point-in-polygon) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+
+    <!-- PapaParse (per il parsing dei CSV) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+    <style>
+        .leaflet-default-icon-path {
+            background-image: url(https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png);
+        }
+        #map { background-color: #f3f4f6; }
+        .area-item.active { background-color: #e0f2fe; border-left: 4px solid #3b82f6; }
+        .area-item { transition: all 0.2s; border-left: 4px solid transparent; }
+        .table-container::-webkit-scrollbar { width: 8px; height: 8px; }
+        .table-container::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .table-container::-webkit-scrollbar-track { background: #f8fafc; }
+        .fuel-marker { position: absolute; left: 3px; top: 1px; display: block; width: 18px; height: 18px; box-sizing: border-box; border: 3px solid #fff; border-radius: 50% 50% 50% 0; background: #2563eb; box-shadow: 0 2px 6px rgba(15, 23, 42, 0.65), 0 0 0 1px rgba(15, 23, 42, 0.25); transform: rotate(-45deg); transition: transform 140ms ease, background-color 140ms ease, box-shadow 140ms ease; }
+        .fuel-marker::after { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: #fff; }
+        .fuel-marker--updated { background: #2563eb; }
+        .fuel-marker--stale, .fuel-marker--no-price { background: #64748b; }
+        .fuel-marker.is-hovered { z-index: 1000; background: #f97316; transform: rotate(-45deg) scale(1.8); box-shadow: 0 0 0 5px rgba(249, 115, 22, 0.35), 0 3px 9px rgba(15, 23, 42, 0.7); }
+        .fuel-marker-wrap { background: transparent; border: 0; }
+        .station-row { transition: background-color 100ms ease, box-shadow 100ms ease; }
+        .station-row:hover td { background-color: #ffedd5 !important; }
+        .station-row:hover { box-shadow: inset 0 0 0 2px #f97316; }
+        .station-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #dataPanel.is-loaded #dataPanelBody { display: none; }
+        #helpSpotlight, #helpSpotlightSecondary { position: fixed; z-index: 1000; box-sizing: border-box; pointer-events: none; border: 3px solid #f59e0b; border-radius: 6px; box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.58); transition: top 180ms ease, left 180ms ease, width 180ms ease, height 180ms ease; }
+        #helpPopover { position: fixed; z-index: 1001; width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto; }
+        #helpPopover::before { content: ''; position: absolute; top: -9px; left: var(--help-arrow-left, 28px); width: 16px; height: 16px; transform: rotate(45deg); background: #fff; border-top: 1px solid #d1d5db; border-left: 1px solid #d1d5db; }
+        #helpPopover.help-popover-above::before { top: auto; bottom: -9px; border: 0; border-right: 1px solid #d1d5db; border-bottom: 1px solid #d1d5db; }
+    </style>
+</head>
+<body class="h-screen w-screen overflow-hidden flex bg-gray-100 font-sans text-gray-800">
+
+    <!-- SIDEBAR SINISTRA -->
+    <aside id="appSidebar" class="w-[378px] bg-white border-r border-gray-200 shadow-lg flex flex-col h-full flex-shrink-0 relative z-10">
+        <div class="p-5 overflow-y-auto h-full space-y-6">
+            
+            <!-- Intestazione -->
+            <div>
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <div class="flex items-center gap-2 mb-1">
+                            <h1 class="text-2xl font-bold text-blue-900">PREZZI BENZINA</h1>
+                            <span class="px-1.5 py-0.5 text-[10px] font-bold text-gray-600 bg-gray-100 border border-gray-200 rounded" aria-label="Revisione 1.0">V1.0</span>
+                        </div>
+                        <p class="text-sm text-gray-500">Prezzi ufficiali da database MIMIT</p>
+                    </div>
+                    <button id="btnHelp" type="button" class="shrink-0 px-3 py-1.5 text-xs font-bold text-blue-800 border border-blue-300 rounded hover:bg-blue-50" aria-haspopup="dialog" aria-label="Apri la guida di utilizzo">HELP</button>
+                </div>
+                <div id="mimitDownloadSection" class="mt-3 text-xs bg-blue-50 text-blue-800 p-3 rounded-md border border-blue-200">
+                    <p><strong>1.</strong> Scarica i dati ufficiali dal MIMIT:</p>
+                    <div class="flex gap-2 mt-2">
+                        <a href="https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv" target="_blank" class="px-2 py-1 bg-white border border-blue-300 rounded shadow-sm hover:bg-blue-100 flex-1 text-center font-semibold">📥 Anagrafica CSV</a>
+                        <a href="https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv" target="_blank" class="px-2 py-1 bg-white border border-blue-300 rounded shadow-sm hover:bg-blue-100 flex-1 text-center font-semibold">📥 Prezzi CSV</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Caricamento File -->
+            <div id="dataPanel" class="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+                <button id="toggleDataPanel" type="button" class="w-full p-4 flex justify-between items-center text-left hover:bg-gray-100">
+                    <span class="text-md font-bold flex items-center gap-2"><span class="bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">2</span> Caricamento Dati</span>
+                    <span class="flex items-center gap-3"><span id="dataPanelSummary" class="text-xs text-gray-500"></span><span id="dataPanelToggleLabel" class="text-xs text-blue-700 font-semibold">Comprimi</span></span>
+                </button>
+                <div id="dataPanelBody" class="px-4 pb-4 space-y-3">
+                    <button id="btnScegliCartella" type="button" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-3 rounded text-sm">Collega cartella dati</button>
+                    <p id="folderStatus" class="text-xs text-center text-gray-600">Seleziona la cartella contenente anagrafica_impianti_attivi.csv.</p>
+                    <button id="btnScegliPrezzi" type="button" class="w-full bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-3 rounded text-sm">Seleziona CSV prezzi da Download</button>
+                    <p id="priceFileStatus" class="text-xs text-center text-gray-600">Il file prezzo_alle_8.csv va selezionato manualmente.</p>
+                    <details id="manualUploadsDetails">
+                        <summary class="text-xs font-semibold text-gray-600 cursor-pointer">Caricamento manuale CSV</summary>
+                        <div class="space-y-3 mt-3">
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-600 mb-1">Seleziona Anagrafica CSV</label>
+                                <input type="file" id="fileAnagrafica" accept=".csv" class="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-600 mb-1">Seleziona Prezzi CSV</label>
+                                <input type="file" id="filePrezzi" accept=".csv" class="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+                            </div>
+                            <button id="btnElabora" type="button" class="w-full bg-white hover:bg-blue-50 text-blue-700 border border-blue-300 font-bold py-2 px-4 rounded text-sm transition disabled:opacity-50 disabled:cursor-not-allowed">Elabora CSV selezionati</button>
+                        </div>
+                    </details>
+                    <p id="loadStatus" class="text-xs text-center font-medium text-gray-600"></p>
+                </div>
+            </div>
+
+            <!-- Gestione Aree -->
+            <div id="areasSection">
+                <h2 class="text-md font-bold mb-2 flex items-center gap-2">Le Tue Aree Salvate</h2>
+                <p class="text-xs text-gray-500 mb-3">Usa gli strumenti sulla mappa per disegnare poligoni.</p>
+                <div class="flex gap-2 mb-3">
+                    <button id="esportaAree" type="button" class="flex-1 px-2 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100">Salva aree nella cartella</button>
+                    <button id="importaAree" type="button" class="flex-1 px-2 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50">Importa backup</button>
+                    <input id="fileBackupAree" type="file" accept=".json,application/json" class="hidden">
+                </div>
+                <p id="areasStatus" role="status" class="text-xs text-gray-600 mb-3">Le aree sono salvate nel browser.</p>
+                <div id="listaAree" class="space-y-2 max-h-48 overflow-y-auto pr-1"></div>
+            </div>
+
+            <!-- Filtri -->
+            <div class="bg-gray-50 p-4 rounded-lg border border-gray-200 opacity-50 pointer-events-none transition-opacity" id="filtriContainer">
+                <h2 class="text-md font-bold mb-3 flex items-center gap-2"><span class="bg-blue-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs">3</span> Filtri</h2>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <!-- Carburante -->
+                    <div>
+                        <p class="text-xs font-semibold text-gray-600 mb-2">Carburante</p>
+                        <label class="flex items-center gap-2 text-sm mb-1 cursor-pointer">
+                            <input type="radio" name="carburante" value="benzina" class="accent-blue-600" checked> Benzina
+                        </label>
+                        <label class="flex items-center gap-2 text-sm cursor-pointer">
+                            <input type="radio" name="carburante" value="gasolio" class="accent-blue-600"> Gasolio / Diesel
+                        </label>
+                    </div>
+                    
+                </div>
+            </div>
+
+            <!-- Statistiche -->
+            <div id="statsContainer" class="bg-blue-900 text-white p-4 rounded-lg hidden">
+                <h3 class="text-sm font-bold text-blue-200 mb-3 uppercase tracking-wide">Statistiche Area Selezionata</h3>
+                <div class="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                        <p class="text-blue-300 text-xs">Prezzi aggiornati</p>
+                        <p class="text-xl font-bold" id="statCount">0</p>
+                    </div>
+                    <div>
+                        <p class="text-blue-300 text-xs">Prezzo Minimo</p>
+                        <p class="text-xl font-bold text-green-400" id="statMin">€ -</p>
+                    </div>
+                    <div>
+                        <p class="text-blue-300 text-xs">Prezzo Medio</p>
+                        <p class="text-lg font-semibold" id="statAvg">€ -</p>
+                    </div>
+                    <div>
+                        <p class="text-blue-300 text-xs">Prezzo Mediano</p>
+                        <p class="text-lg font-semibold" id="statMed">€ -</p>
+                    </div>
+                </div>
+            </div>
+            
+        </div>
+    </aside>
+
+    <!-- CONTENT DESTRA (Mappa + Tabella) -->
+    <main class="flex-1 flex flex-col h-full bg-gray-200 z-0">
+        <!-- Mappa -->
+        <div id="map" class="h-1/2 min-h-[300px] w-full border-b-4 border-blue-600 relative">
+            <div class="absolute bottom-3 right-3 z-[1000] bg-white/95 border border-gray-300 rounded px-3 py-2 shadow-md text-[11px] space-y-1 pointer-events-none">
+                <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-blue-600 border border-white shadow"></span> Prezzo aggiornato</div>
+                <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-slate-500 border border-white shadow"></span> Prezzo vecchio o assente</div>
+                <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-orange-500 border border-white shadow"></span> Riga selezionata col mouse</div>
+            </div>
+        </div>
+        
+        <!-- Tabella Graduatoria -->
+        <div class="h-1/2 w-full bg-white flex flex-col table-container overflow-hidden">
+            <div class="bg-gray-100 p-3 border-b flex justify-between items-center flex-shrink-0">
+                <h2 class="font-bold text-gray-700">Graduatoria Prezzi <span id="titoloTabellaArea" class="text-blue-600"></span></h2>
+                <span class="text-xs text-gray-500" id="risultatiContatore">Seleziona un'area e carica i dati per visualizzare la graduatoria.</span>
+            </div>
+            
+            <div class="flex-1 overflow-auto">
+                <table class="w-full table-fixed text-left border-collapse text-xs">
+                    <colgroup>
+                        <col style="width: 4%">
+                        <col style="width: 10%">
+                        <col style="width: 21%">
+                        <col style="width: 10%">
+                        <col style="width: 19%">
+                        <col style="width: 8%">
+                        <col style="width: 13%">
+                        <col style="width: 15%">
+                    </colgroup>
+                    <thead class="sticky top-0 bg-white shadow-sm z-10 text-xs uppercase text-gray-500">
+                        <tr>
+                            <th class="py-3 px-4 border-b text-center font-bold">#</th>
+                            <th class="py-3 px-4 border-b font-bold text-blue-700">Prezzo (€)</th>
+                            <th class="py-3 px-4 border-b">Impianto / Gestore</th>
+                            <th class="py-3 px-4 border-b">Bandiera</th>
+                            <th class="py-3 px-4 border-b">Indirizzo</th>
+                            <th class="py-3 px-4 border-b text-center">Servizio</th>
+                            <th class="py-3 px-4 border-b text-center">Tipo Carburante (MIMIT)</th>
+                            <th class="py-3 px-4 border-b">Ultimo aggiornamento</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tabellaCorpo" class="text-gray-700 divide-y">
+                        <tr>
+                            <td colspan="8" class="py-8 text-center text-gray-400">Nessun dato da visualizzare</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <dialog id="areaDialog" class="w-full max-w-sm rounded-lg p-0 shadow-xl backdrop:bg-black/40">
+        <form id="areaForm" class="bg-white p-5" novalidate>
+            <h2 id="areaDialogTitle" class="text-lg font-bold text-gray-800 mb-3">Nome area</h2>
+            <label for="areaNameInput" class="block text-sm font-semibold text-gray-600 mb-1">Nome</label>
+            <input id="areaNameInput" type="text" maxlength="60" autocomplete="off" class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <p id="areaDialogError" class="hidden text-sm text-red-600 mt-2" role="alert"></p>
+            <div class="flex justify-end gap-2 mt-5">
+                <button id="annullaArea" type="button" class="px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50">Annulla</button>
+                <button id="salvaArea" type="submit" class="px-3 py-2 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">Salva area</button>
+            </div>
+        </form>
+    </dialog>
+
+    <div id="helpSpotlight" hidden aria-hidden="true"></div>
+    <div id="helpSpotlightSecondary" hidden aria-hidden="true"></div>
+    <section id="helpPopover" hidden role="dialog" aria-modal="false" aria-labelledby="helpTitle" aria-describedby="helpText" class="bg-white border border-gray-300 rounded-lg shadow-2xl p-4">
+        <div class="relative">
+            <div class="flex justify-between items-start gap-3">
+                <div>
+                    <p id="helpStepCount" class="text-xs font-bold text-amber-700 mb-1"></p>
+                    <h2 id="helpTitle" class="text-base font-bold text-gray-900">Guida di utilizzo</h2>
+                </div>
+                <button id="helpClose" type="button" class="p-1 text-gray-500 hover:text-gray-900" aria-label="Chiudi la guida" title="Chiudi">✕</button>
+            </div>
+            <p id="helpText" class="mt-2 text-sm leading-5 text-gray-700"></p>
+            <div class="flex justify-between items-center mt-4">
+                <button id="helpPrevious" type="button" class="px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded hover:bg-gray-50">Indietro</button>
+                <button id="helpNext" type="button" class="px-3 py-1.5 text-sm font-semibold text-white bg-blue-700 rounded hover:bg-blue-800">Avanti</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- LOGICA JAVASCRIPT -->
+    <script>
+        if (typeof L !== 'undefined') {
+            delete L.Icon.Default.prototype._getIconUrl;
+            L.Icon.Default.mergeOptions({
+                iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
+                iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+                shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+            });
+        }
+
+        const AREE_INCLUSE_NELLO_SCRIPT = [];
+        const AREE_DEFAULT_LEGACY_IDS = new Set(['1790432076480', '1790432188843']);
+
+        function caricaAreeEliminate() {
+            try {
+                const ids = JSON.parse(localStorage.getItem('mimit_aree_eliminate') || '[]');
+                const idsValidi = Array.isArray(ids)
+                    ? ids.filter(id => typeof id === 'string' && !AREE_DEFAULT_LEGACY_IDS.has(id))
+                    : [];
+                if (Array.isArray(ids) && idsValidi.length !== ids.length) {
+                    localStorage.setItem('mimit_aree_eliminate', JSON.stringify(idsValidi));
+                }
+                return idsValidi;
+            } catch (error) {
+                console.error('Impossibile leggere le aree escluse.', error);
+                return [];
+            }
+        }
+
+        function caricaAreeSalvate() {
+            try {
+                const idsEliminati = new Set(caricaAreeEliminate());
+                const areeLocaliOriginali = JSON.parse(localStorage.getItem('mimit_aree_salvate') || '[]');
+                const areeLocali = Array.isArray(areeLocaliOriginali)
+                    ? areeLocaliOriginali.filter(area => area && !AREE_DEFAULT_LEGACY_IDS.has(area.id))
+                    : [];
+                if (Array.isArray(areeLocaliOriginali) && areeLocali.length !== areeLocaliOriginali.length) {
+                    localStorage.setItem('mimit_aree_salvate', JSON.stringify(areeLocali));
+                }
+                const areePerId = new Map();
+                AREE_INCLUSE_NELLO_SCRIPT.forEach(area => {
+                    if (!idsEliminati.has(area.id)) areePerId.set(area.id, JSON.parse(JSON.stringify(area)));
+                });
+                if (Array.isArray(areeLocali)) {
+                    areeLocali.forEach(area => {
+                        if (area && typeof area.id === 'string' && !idsEliminati.has(area.id)) {
+                            areePerId.set(area.id, area);
+                        }
+                    });
+                }
+                return [...areePerId.values()];
+            } catch (error) {
+                console.error('Impossibile leggere le aree salvate.', error);
+                return [];
+            }
+        }
+
+        function caricaAreaSelezionata(aree) {
+            try {
+                const idArea = localStorage.getItem('mimit_area_selezionata');
+                return aree.some(area => area.id === idArea) ? idArea : (aree[0]?.id || null);
+            } catch (error) {
+                console.error('Impossibile leggere la selezione dell’area.', error);
+                return null;
+            }
+        }
+
+        const areeSalvate = caricaAreeSalvate();
+        const AppState = {
+            anagrafica: new Map(),
+            prezzi: new Map(),
+            aree: areeSalvate,
+            areeEliminate: caricaAreeEliminate(),
+            areaSelezionata: caricaAreaSelezionata(areeSalvate),
+            filtroCarburante: 'benzina',
+            datiCaricati: false
+        };
+
+        let dataDirectoryHandle = null;
+        let fileAnagraficaCartella = null;
+        let filePrezziSelezionato = null;
+        let map;
+        let markersLayer = typeof L !== 'undefined' ? L.layerGroup() : null;
+        let poligoniLayer = typeof L !== 'undefined' ? L.layerGroup() : null;
+        let drawnLayersMap = new Map();
+        let layerAreaInCreazione = null;
+        let areaInRinomina = null;
+        let helpStepIndex = 0;
+        let helpPanelWasCollapsed = false;
+        let helpGuideActive = false;
+
+        const HELP_STEPS = [
+            {
+                selectors: ['#mimitDownloadSection'],
+                text: 'Scarica dal MIMIT il CSV dei prezzi. Se necessario, puoi aggiornare anche l’anagrafica locale.'
+            },
+            {
+                selectors: ['#dataPanel'],
+                text: 'Collega la cartella locale per caricare le aree salvate e l’anagrafica, poi seleziona il CSV dei prezzi appena scaricato.'
+            },
+            {
+                selectors: ['#btnDrawArea', '#esportaAree'],
+                text: 'Crea nuove aree usando l’icona a poligono sulla mappa, poi premi “Salva aree nella cartella” per aggiornare il JSON.'
+            }
+        ];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            renderListaAree();
+            attivaAscoltatori();
+            if (typeof L !== 'undefined') {
+                try {
+                    initMap();
+                } catch (error) {
+                    console.error('Impossibile inizializzare la mappa.', error);
+                    mostraErroreMappa();
+                }
+            } else {
+                mostraErroreMappa();
+            }
+            if (AppState.areaSelezionata) selezionaArea(AppState.areaSelezionata);
+            document.getElementById('btnHelp').addEventListener('click', () => {
+                if (helpGuideActive) chiudiGuida();
+                else apriGuida();
+            });
+            document.getElementById('helpClose').addEventListener('click', chiudiGuida);
+            document.getElementById('helpNext').addEventListener('click', vaiAlPassaggioSuccessivo);
+            document.getElementById('helpPrevious').addEventListener('click', vaiAlPassaggioPrecedente);
+            document.getElementById('helpPopover').addEventListener('keydown', event => {
+                if (event.key === 'Escape') chiudiGuida();
+            });
+            window.addEventListener('resize', posizionaGuida);
+            document.getElementById('appSidebar').addEventListener('scroll', posizionaGuida);
+            ripristinaCartellaDati().finally(avviaGuidaAlPrimoAvvio);
+        });
+
+        function avviaGuidaAlPrimoAvvio() {
+            try {
+                if (localStorage.getItem('mimit_guida_vista_v1') !== '1') apriGuida(true);
+            } catch (error) {
+                console.error('Impossibile leggere lo stato della guida.', error);
+            }
+        }
+
+        function apriGuida(primoAvvio = false) {
+            if (!helpGuideActive) {
+                helpPanelWasCollapsed = document.getElementById('dataPanel').classList.contains('is-loaded');
+            }
+            helpGuideActive = true;
+            helpStepIndex = 0;
+            document.getElementById('helpSpotlight').hidden = false;
+            document.getElementById('helpPopover').hidden = false;
+            document.getElementById('btnHelp').setAttribute('aria-expanded', 'true');
+            document.getElementById('btnHelp').setAttribute('aria-label', 'Chiudi la guida di utilizzo');
+            if (primoAvvio) {
+                try {
+                    localStorage.setItem('mimit_guida_vista_v1', '1');
+                } catch (error) {
+                    console.error('Impossibile salvare lo stato della guida.', error);
+                }
+            }
+            mostraPassaggioGuida();
+        }
+
+        function mostraPassaggioGuida() {
+            const step = HELP_STEPS[helpStepIndex];
+            const targets = step.selectors.map(selector => document.querySelector(selector)).filter(Boolean);
+            const target = targets[0];
+            if (!target) return chiudiGuida();
+
+            if (step.selectors.includes('#dataPanel') && target.classList.contains('is-loaded')) {
+                target.classList.remove('is-loaded');
+                document.getElementById('dataPanelToggleLabel').textContent = 'Comprimi';
+            }
+            target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+            document.getElementById('helpStepCount').textContent = `GUIDA ${helpStepIndex + 1} DI ${HELP_STEPS.length}`;
+            document.getElementById('helpText').textContent = step.text;
+            document.getElementById('helpPrevious').disabled = helpStepIndex === 0;
+            document.getElementById('helpPrevious').classList.toggle('opacity-40', helpStepIndex === 0);
+            document.getElementById('helpNext').textContent = helpStepIndex === HELP_STEPS.length - 1 ? 'Fine' : 'Avanti';
+            requestAnimationFrame(posizionaGuida);
+            setTimeout(posizionaGuida, 250);
+        }
+
+        function posizionaGuida() {
+            if (!helpGuideActive) return;
+            const step = HELP_STEPS[helpStepIndex];
+            const targets = step.selectors.map(selector => document.querySelector(selector)).filter(Boolean);
+            const target = targets[0];
+            const spotlights = [document.getElementById('helpSpotlight'), document.getElementById('helpSpotlightSecondary')];
+            const popover = document.getElementById('helpPopover');
+            if (!target || popover.hidden) return;
+
+            const padding = 5;
+            targets.forEach((element, index) => {
+                const rect = element.getBoundingClientRect();
+                const spotlight = spotlights[index];
+                if (!spotlight) return;
+                spotlight.hidden = false;
+                spotlight.style.left = `${Math.max(4, rect.left - padding)}px`;
+                spotlight.style.top = `${Math.max(4, rect.top - padding)}px`;
+                spotlight.style.width = `${Math.max(0, rect.width + padding * 2)}px`;
+                spotlight.style.height = `${Math.max(0, rect.height + padding * 2)}px`;
+            });
+            spotlights.slice(targets.length).forEach(spotlight => { spotlight.hidden = true; });
+
+            const rect = target.getBoundingClientRect();
+
+            const margin = 12;
+            const popoverWidth = Math.min(360, window.innerWidth - margin * 2);
+            popover.style.width = `${popoverWidth}px`;
+            const left = Math.max(margin, Math.min(rect.left, window.innerWidth - popoverWidth - margin));
+            popover.style.left = `${left}px`;
+            popover.classList.remove('help-popover-above');
+            let top = rect.bottom + 16;
+            if (top + popover.offsetHeight > window.innerHeight - margin && rect.top > popover.offsetHeight + margin * 2) {
+                top = rect.top - popover.offsetHeight - 16;
+                popover.classList.add('help-popover-above');
+            }
+            popover.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - popover.offsetHeight - margin))}px`;
+            const arrowLeft = Math.max(16, Math.min(rect.left + rect.width / 2 - left - 8, popoverWidth - 32));
+            popover.style.setProperty('--help-arrow-left', `${arrowLeft}px`);
+        }
+
+        function vaiAlPassaggioSuccessivo() {
+            if (helpStepIndex === HELP_STEPS.length - 1) return chiudiGuida();
+            helpStepIndex++;
+            mostraPassaggioGuida();
+        }
+
+        function vaiAlPassaggioPrecedente() {
+            if (helpStepIndex === 0) return;
+            helpStepIndex--;
+            mostraPassaggioGuida();
+        }
+
+        function chiudiGuida() {
+            helpGuideActive = false;
+            document.getElementById('helpSpotlight').hidden = true;
+            document.getElementById('helpSpotlightSecondary').hidden = true;
+            document.getElementById('helpPopover').hidden = true;
+            document.getElementById('btnHelp').setAttribute('aria-expanded', 'false');
+            document.getElementById('btnHelp').setAttribute('aria-label', 'Apri la guida di utilizzo');
+            if (helpPanelWasCollapsed) {
+                document.getElementById('dataPanel').classList.add('is-loaded');
+                document.getElementById('dataPanelToggleLabel').textContent = 'Espandi';
+            }
+        }
+
+        function mostraErroreMappa() {
+            document.getElementById('map').innerHTML = '<div class="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-gray-600">Mappa non disponibile: verifica la connessione Internet e il caricamento delle librerie esterne. Le aree salvate restano visibili nell’elenco.</div>';
+        }
+
+        function initMap() {
+            map = L.map('map').setView([45.85, 9.39], 9);
+
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+                maxZoom: 19,
+                attribution: 'Tiles &copy; Esri'
+            }).addTo(map);
+
+            poligoniLayer.addTo(map);
+            markersLayer.addTo(map);
+
+            if (map.pm) map.pm.addControls({
+                position: 'topleft',
+                drawMarker: false,
+                drawCircleMarker: false,
+                drawPolyline: false,
+                drawRectangle: false,
+                drawCircle: false,
+                drawText: false,
+                editMode: false,
+                dragMode: false,
+                cutPolygon: false,
+                removalMode: false
+            });
+
+            const drawAreaButton = document.querySelector('#map .leaflet-pm-icon-polygon')?.closest('a.leaflet-buttons-control-button');
+            if (drawAreaButton) {
+                drawAreaButton.id = 'btnDrawArea';
+                drawAreaButton.title = 'Disegna una nuova area';
+                drawAreaButton.setAttribute('aria-label', 'Disegna una nuova area');
+            }
+
+            if (map.pm) map.pm.setPathOptions({
+                color: '#3b82f6',
+                fillColor: '#3b82f6',
+                fillOpacity: 0.3,
+            });
+
+            if (map.pm) {
+                map.on('pm:create', (e) => {
+                    layerAreaInCreazione = e.layer;
+                    apriDialogArea('', false);
+                });
+            }
+
+            disegnaPoligoni();
+        }
+
+        function attivaAscoltatori() {
+            document.getElementById('btnElabora').addEventListener('click', () => processFiles());
+            document.getElementById('btnScegliCartella').addEventListener('click', collegaCartellaDati);
+            document.getElementById('btnScegliPrezzi').addEventListener('click', scegliFilePrezzi);
+            document.getElementById('filePrezzi').addEventListener('change', (event) => {
+                filePrezziSelezionato = event.target.files[0] || null;
+                document.getElementById('priceFileStatus').textContent = filePrezziSelezionato
+                    ? `File selezionato: ${filePrezziSelezionato.name}`
+                    : 'Il file prezzo_alle_8.csv va selezionato manualmente.';
+            });
+            document.getElementById('toggleDataPanel').addEventListener('click', () => {
+                const panel = document.getElementById('dataPanel');
+                if (!AppState.datiCaricati) return;
+                panel.classList.toggle('is-loaded');
+                document.getElementById('dataPanelToggleLabel').textContent = panel.classList.contains('is-loaded') ? 'Espandi' : 'Comprimi';
+            });
+            document.getElementById('areaForm').addEventListener('submit', salvaAreaDaDialog);
+            document.getElementById('annullaArea').addEventListener('click', () => {
+                document.getElementById('areaDialog').close();
+            });
+            document.getElementById('areaDialog').addEventListener('cancel', annullaAreaInCreazione);
+            document.getElementById('areaDialog').addEventListener('close', annullaAreaInCreazione);
+            document.getElementById('esportaAree').addEventListener('click', esportaAree);
+            document.getElementById('importaAree').addEventListener('click', () => {
+                document.getElementById('fileBackupAree').click();
+            });
+            document.getElementById('fileBackupAree').addEventListener('change', importaAreeDaFile);
+
+            document.querySelectorAll('input[name="carburante"]').forEach(el => {
+                el.addEventListener('change', (e) => {
+                    AppState.filtroCarburante = e.target.value;
+                    aggiornaVista();
+                });
+            });
+
+        }
+
+        function readFileAsText(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = (e) => reject(e);
+                reader.readAsText(file);
+            });
+        }
+
+        // Rimuove eventuali metadati/titoli prima dell'header idImpianto
+        function preparaCsvTesto(csvTesto) {
+            if (!csvTesto) return '';
+            const idx = csvTesto.search(/id[_\s]?impianto/i);
+            if (idx !== -1) {
+                return csvTesto.substring(idx);
+            }
+            const righe = csvTesto.split(/\r?\n/);
+            for (let i = 0; i < righe.length; i++) {
+                const riga = righe[i].trim();
+                if (riga.includes(';') || riga.includes('|') || riga.includes(',')) {
+                    return righe.slice(i).join('\n');
+                }
+            }
+            return csvTesto;
+        }
+
+        function rilevaSeparatore(csvTesto) {
+            const primaRiga = csvTesto.split(/\r?\n/)[0] || '';
+            if (primaRiga.includes(';')) return ';';
+            if (primaRiga.includes('|')) return '|';
+            if (primaRiga.includes('\t')) return '\t';
+            if (primaRiga.includes(',')) return ',';
+            return ';';
+        }
+
+        async function scegliFilePrezzi() {
+            const statusLabel = document.getElementById('loadStatus');
+            if (!window.showOpenFilePicker) {
+                document.getElementById('manualUploadsDetails').open = true;
+                statusLabel.className = 'text-xs text-center font-medium text-amber-700';
+                statusLabel.textContent = 'Il browser non può aprire direttamente Download. Seleziona il CSV prezzi nel caricamento manuale.';
+                document.getElementById('filePrezzi').focus();
+                return;
+            }
+
+            try {
+                const [fileHandle] = await window.showOpenFilePicker({
+                    startIn: 'downloads',
+                    multiple: false,
+                    types: [{ description: 'File CSV', accept: { 'text/csv': ['.csv'] } }]
+                });
+                filePrezziSelezionato = await fileHandle.getFile();
+                document.getElementById('filePrezzi').value = '';
+                document.getElementById('priceFileStatus').textContent = `File selezionato: ${filePrezziSelezionato.name}`;
+                await processFiles();
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('Selezione del file prezzi non riuscita.', error);
+                    statusLabel.className = 'text-xs text-center font-medium text-red-600';
+                    statusLabel.textContent = `Selezione non riuscita: ${error.message}. Usa il caricamento manuale CSV.`;
+                    document.getElementById('manualUploadsDetails').open = true;
+                }
+            }
+        }
+
+        async function processFiles(fileOverride = null) {
+            const fileAna = fileOverride?.anagrafica || document.getElementById('fileAnagrafica').files[0] || fileAnagraficaCartella;
+            const filePre = fileOverride?.prezzi || filePrezziSelezionato || document.getElementById('filePrezzi').files[0];
+            const statusLabel = document.getElementById('loadStatus');
+
+            if (typeof Papa === 'undefined' || typeof turf === 'undefined' || !markersLayer) {
+                statusLabel.className = 'text-xs text-center font-bold mt-2 text-red-600';
+                statusLabel.textContent = 'Librerie esterne non disponibili. Le aree sono visibili, ma la mappa e i dati richiedono una connessione Internet.';
+                return false;
+            }
+
+            if (!fileAna || !filePre) {
+                statusLabel.className = 'text-xs text-center font-medium text-amber-700';
+                statusLabel.textContent = !fileAna
+                    ? 'Collega la cartella dell’anagrafica o seleziona il CSV anagrafica nel caricamento manuale.'
+                    : 'Seleziona manualmente il CSV prezzi da Download.';
+                return false;
+            }
+
+            try {
+                document.getElementById('btnElabora').disabled = true;
+                statusLabel.className = "text-xs text-center font-bold mt-2 text-blue-600";
+                statusLabel.textContent = "Caricamento in corso...";
+
+                const [testoAnaGrezzo, testoPreGrezzo] = await Promise.all([
+                    readFileAsText(fileAna),
+                    readFileAsText(filePre)
+                ]);
+
+                const testoAna = preparaCsvTesto(testoAnaGrezzo);
+                const testoPre = preparaCsvTesto(testoPreGrezzo);
+
+                // Parsing Anagrafica
+                statusLabel.textContent = "Parsing Anagrafica...";
+                const sepAna = rilevaSeparatore(testoAna);
+                const anaParsed = Papa.parse(testoAna, {
+                    delimiter: sepAna,
+                    header: true,
+                    skipEmptyLines: 'greedy',
+                    transformHeader: (h) => h.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+                });
+
+                AppState.anagrafica.clear();
+                anaParsed.data.forEach(row => {
+                    const id = row.idimpianto || row.id_impianto || row.id;
+                    if (!id) return;
+                    
+                    const parseCoord = (c) => parseFloat((c ?? "").toString().replace(',', '.'));
+                    let lat = parseCoord(row.latitudine || row.lat);
+                    let lng = parseCoord(row.longitudine || row.lng || row.long || row.lon);
+
+                    if (isNaN(lat) || isNaN(lng)) return;
+
+                    // Correzione automatica lat/lng scambiate
+                    if (lat >= 5 && lat <= 20 && lng >= 35 && lng <= 48) {
+                        const tmp = lat;
+                        lat = lng;
+                        lng = tmp;
+                    }
+
+                    AppState.anagrafica.set(String(id).trim(), {
+                        id: String(id).trim(),
+                        nome: row.nomeimpianto || row.nome || 'Sconosciuto',
+                        gestore: row.gestore || 'Sconosciuto',
+                        bandiera: row.bandiera || 'Pompa Bianca',
+                        indirizzo: row.indirizzo || '',
+                        comune: row.comune || '',
+                        lat: lat,
+                        lng: lng
+                    });
+                });
+
+                // Parsing Prezzi
+                statusLabel.textContent = "Parsing Prezzi...";
+                const sepPre = rilevaSeparatore(testoPre);
+                const preParsed = Papa.parse(testoPre, {
+                    delimiter: sepPre,
+                    header: true,
+                    skipEmptyLines: 'greedy',
+                    transformHeader: (h) => h.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+                });
+
+                AppState.prezzi.clear();
+                preParsed.data.forEach(row => {
+                    const id = row.idimpianto || row.id_impianto || row.id;
+                    if (!id) return;
+
+                    const prezzoVal = parseFloat((row.prezzo ?? "").toString().replace(',', '.'));
+                    if (isNaN(prezzoVal) || prezzoVal <= 0) return;
+
+                    const isSelfVal = String(row.isself ?? row.is_self ?? row.self ?? '').trim();
+
+                    const pObj = {
+                        carburante: row.desccarburante || row.carburante || '',
+                        prezzo: prezzoVal,
+                        isSelf: isSelfVal,
+                        dataAgg: row.dtcomu || row.datacomunicazione || ''
+                    };
+
+                    const strId = String(id).trim();
+                    if (!AppState.prezzi.has(strId)) {
+                        AppState.prezzi.set(strId, []);
+                    }
+                    AppState.prezzi.get(strId).push(pObj);
+                });
+
+                AppState.datiCaricati = true;
+                document.getElementById('filtriContainer').classList.remove('opacity-50', 'pointer-events-none');
+                
+                statusLabel.className = "text-xs text-center font-bold mt-2 text-green-600";
+                statusLabel.textContent = `Caricamento completato! ${AppState.anagrafica.size} impianti validi caricati.`;
+                
+                document.getElementById('btnElabora').disabled = false;
+                document.getElementById('btnElabora').textContent = "Ricarica Dati";
+                document.getElementById('dataPanel').classList.add('is-loaded');
+                document.getElementById('dataPanelToggleLabel').textContent = 'Espandi';
+                document.getElementById('dataPanelSummary').textContent = `${AppState.anagrafica.size.toLocaleString('it-IT')} impianti`;
+
+                aggiornaVista();
+                return true;
+
+            } catch (err) {
+                console.error(err);
+                statusLabel.className = "text-xs text-center font-bold mt-2 text-red-600";
+                statusLabel.textContent = "Errore durante il caricamento. Controlla i file.";
+                document.getElementById('btnElabora').disabled = false;
+                return false;
+            }
+        }
+
+        function apriDatabaseDirectory() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open('mimit-carburanti', 1);
+                request.onupgradeneeded = () => request.result.createObjectStore('handles');
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        async function leggiDirectoryPersistita() {
+            const db = await apriDatabaseDirectory();
+            return new Promise((resolve, reject) => {
+                const request = db.transaction('handles', 'readonly').objectStore('handles').get('dataDirectory');
+                request.onsuccess = () => resolve(request.result || null);
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        async function salvaDirectoryPersistita(handle) {
+            const db = await apriDatabaseDirectory();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction('handles', 'readwrite');
+                transaction.objectStore('handles').put(handle, 'dataDirectory');
+                transaction.oncomplete = resolve;
+                transaction.onerror = () => reject(transaction.error);
+            });
+        }
+
+        function mostraStatoCartella(messaggio, errore = false) {
+            const label = document.getElementById('folderStatus');
+            label.textContent = messaggio;
+            label.className = `text-xs text-center ${errore ? 'text-red-600' : 'text-gray-600'}`;
+        }
+
+        function mostraStatoAree(messaggio, errore = false) {
+            const label = document.getElementById('areasStatus');
+            label.textContent = messaggio;
+            label.className = `text-xs mb-3 ${errore ? 'text-red-600' : 'text-gray-600'}`;
+        }
+
+        function validaBackupAree(backup) {
+            const aree = Array.isArray(backup) ? backup : backup?.aree;
+            if (!Array.isArray(aree) || !aree.every(area =>
+                area && typeof area.id === 'string' && typeof area.nome === 'string' && area.nome.trim() &&
+                area.geojson?.geometry && ['Polygon', 'MultiPolygon'].includes(area.geojson.geometry.type) &&
+                Array.isArray(area.geojson.geometry.coordinates)
+            )) {
+                throw new Error('Il file aree-carburanti.json non ha un formato valido.');
+            }
+            return aree;
+        }
+
+        function applicaBackupAree(backup) {
+            const areeImportate = validaBackupAree(backup);
+            const idsEliminati = Array.isArray(backup?.areeEliminate)
+                ? backup.areeEliminate.filter(id => typeof id === 'string')
+                : [];
+            const areePerId = new Map();
+            AREE_INCLUSE_NELLO_SCRIPT.forEach(area => {
+                if (!idsEliminati.includes(area.id)) areePerId.set(area.id, JSON.parse(JSON.stringify(area)));
+            });
+            areeImportate.forEach(area => areePerId.set(area.id, area));
+
+            AppState.aree = [...areePerId.values()];
+            AppState.areeEliminate = idsEliminati;
+            if (!AppState.aree.some(area => area.id === AppState.areaSelezionata)) {
+                AppState.areaSelezionata = AppState.aree[0]?.id || null;
+            }
+            salvaAree();
+            renderListaAree();
+            if (AppState.areaSelezionata) selezionaArea(AppState.areaSelezionata);
+        }
+
+        async function scriviAreeNellaCartella(handle = dataDirectoryHandle) {
+            if (!handle) throw new Error('Collega prima la cartella dati.');
+            let permesso = await handle.queryPermission({ mode: 'readwrite' });
+            if (permesso !== 'granted') permesso = await handle.requestPermission({ mode: 'readwrite' });
+            if (permesso !== 'granted') throw new Error('Permesso di scrittura negato per la cartella.');
+
+            const fileHandle = await handle.getFileHandle('aree-carburanti.json', { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(JSON.stringify({ versione: 1, aree: AppState.aree, areeEliminate: AppState.areeEliminate }, null, 2));
+            await writable.close();
+            mostraStatoCartella(`Cartella ${handle.name}: aree salvate in aree-carburanti.json.`);
+            mostraStatoAree(`Aree salvate in ${handle.name}/aree-carburanti.json.`);
+        }
+
+        async function fileDallaCartella(handle, nomeFile) {
+            const fileHandle = await handle.getFileHandle(nomeFile);
+            return fileHandle.getFile();
+        }
+
+        async function caricaDatiDallaCartella(handle) {
+            mostraStatoCartella(`Lettura file da ${handle.name}...`);
+            try {
+                const fileAnagrafica = await fileDallaCartella(handle, 'anagrafica_impianti_attivi.csv');
+                fileAnagraficaCartella = fileAnagrafica;
+                let areeImportate = false;
+                try {
+                    const fileAree = await fileDallaCartella(handle, 'aree-carburanti.json');
+                    applicaBackupAree(JSON.parse(await fileAree.text()));
+                    areeImportate = true;
+                } catch (error) {
+                    if (error.name !== 'NotFoundError') {
+                        console.error('Importazione automatica delle aree non riuscita.', error);
+                        mostraStatoAree(`Aree non importate: ${error.message}`, true);
+                    }
+                }
+                document.getElementById('fileAnagrafica').value = '';
+                document.getElementById('filePrezzi').value = '';
+                const filePrezzi = filePrezziSelezionato;
+                if (filePrezzi) {
+                    await processFiles({ anagrafica: fileAnagrafica, prezzi: filePrezzi });
+                } else {
+                    mostraStatoCartella(`Cartella ${handle.name}: anagrafica caricata. Seleziona il CSV prezzi qui sotto.`);
+                    document.getElementById('loadStatus').textContent = 'Seleziona manualmente il CSV prezzi da Download.';
+                }
+                if (areeImportate) mostraStatoAree(`Aree caricate da ${handle.name}/aree-carburanti.json.`);
+                if (AppState.datiCaricati) {
+                    mostraStatoCartella(`Cartella ${handle.name} collegata. Anagrafica caricata.`);
+                    document.getElementById('btnScegliCartella').textContent = 'Ricarica dati dalla cartella';
+                }
+            } catch (error) {
+                console.error(error);
+                mostraStatoCartella(`Impossibile caricare la cartella: ${error.message}`, true);
+                document.getElementById('dataPanel').classList.remove('is-loaded');
+                document.getElementById('dataPanelToggleLabel').textContent = 'Comprimi';
+            }
+        }
+
+        async function collegaCartellaDati() {
+            if (!window.showDirectoryPicker) {
+                mostraStatoCartella('Il browser non supporta la lettura diretta delle cartelle. Usa il caricamento manuale CSV.', true);
+                return;
+            }
+            try {
+                let handle = dataDirectoryHandle;
+                if (handle) {
+                    let permessoSalvato = await handle.queryPermission({ mode: 'readwrite' });
+                    if (permessoSalvato !== 'granted') permessoSalvato = await handle.requestPermission({ mode: 'readwrite' });
+                    if (permessoSalvato === 'granted') {
+                        await caricaDatiDallaCartella(handle);
+                        return;
+                    }
+                }
+
+                handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                let permesso = await handle.queryPermission({ mode: 'readwrite' });
+                if (permesso !== 'granted') permesso = await handle.requestPermission({ mode: 'readwrite' });
+                if (permesso !== 'granted') throw new Error('Permesso di lettura e scrittura negato.');
+                dataDirectoryHandle = handle;
+                await salvaDirectoryPersistita(handle);
+                await caricaDatiDallaCartella(handle);
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error(error);
+                    mostraStatoCartella(`Impossibile collegare la cartella: ${error.message}`, true);
+                }
+            }
+        }
+
+        async function ripristinaCartellaDati() {
+            if (!window.showDirectoryPicker || !window.indexedDB) return false;
+            try {
+                const handle = await leggiDirectoryPersistita();
+                if (!handle) return false;
+                dataDirectoryHandle = handle;
+                let permesso = await handle.queryPermission({ mode: 'readwrite' });
+                if (permesso !== 'granted') {
+                    permesso = await handle.requestPermission({ mode: 'readwrite' });
+                }
+                if (permesso !== 'granted') {
+                    document.getElementById('btnScegliCartella').textContent = 'Ricollega cartella dati';
+                    mostraStatoCartella('Consenti a Chrome l’accesso alla cartella per caricare i dati senza riselezionarla.');
+                    return false;
+                }
+                document.getElementById('btnScegliCartella').textContent = 'Ricarica dati dalla cartella';
+                await caricaDatiDallaCartella(handle);
+                return AppState.datiCaricati;
+            } catch (error) {
+                console.error('Ripristino cartella non riuscito.', error);
+                document.getElementById('btnScegliCartella').textContent = 'Ricollega cartella dati';
+                mostraStatoCartella('Chrome non ha autorizzato la cartella all’avvio. Clicca “Ricollega cartella dati” per consentire l’accesso.', true);
+                return false;
+            }
+        }
+
+        function salvaAree() {
+            try {
+                localStorage.setItem('mimit_aree_salvate', JSON.stringify(AppState.aree));
+                localStorage.setItem('mimit_aree_eliminate', JSON.stringify(AppState.areeEliminate));
+                if (dataDirectoryHandle) {
+                    scriviAreeNellaCartella().catch(error => {
+                        console.error('Salvataggio automatico del JSON aree non riuscito.', error);
+                        mostraStatoCartella(`Aree in memoria browser, ma non salvate nel file: ${error.message}`, true);
+                    });
+                }
+                return true;
+            } catch (error) {
+                console.error('Impossibile salvare le aree.', error);
+                return false;
+            }
+        }
+
+        async function esportaAree() {
+            if (!dataDirectoryHandle) {
+                if (!window.showDirectoryPicker) {
+                    mostraStatoAree('Il browser non può scrivere nella cartella. Usa Importa backup per gestire un file JSON.', true);
+                    return;
+                }
+                try {
+                    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                    let permesso = await handle.queryPermission({ mode: 'readwrite' });
+                    if (permesso !== 'granted') permesso = await handle.requestPermission({ mode: 'readwrite' });
+                    if (permesso !== 'granted') throw new Error('Permesso di scrittura negato per la cartella.');
+                    dataDirectoryHandle = handle;
+                    await salvaDirectoryPersistita(handle);
+                } catch (error) {
+                    if (error.name !== 'AbortError') {
+                        console.error(error);
+                        mostraStatoCartella(`Salvataggio non riuscito: ${error.message}`, true);
+                        mostraStatoAree(`Salvataggio non riuscito: ${error.message}`, true);
+                    } else {
+                        mostraStatoAree('Salvataggio annullato.');
+                    }
+                    return;
+                }
+            }
+            try {
+                await scriviAreeNellaCartella();
+            } catch (error) {
+                console.error(error);
+                mostraStatoCartella(`Salvataggio non riuscito: ${error.message}`, true);
+                mostraStatoAree(`Salvataggio non riuscito: ${error.message}`, true);
+            }
+        }
+
+        async function importaAreeDaFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            try {
+                const backup = JSON.parse(await file.text());
+                const aree = Array.isArray(backup) ? backup : backup.aree;
+                const areeValide = Array.isArray(aree) && aree.every(area =>
+                    area && typeof area.id === 'string' && typeof area.nome === 'string' && area.nome.trim() &&
+                    area.geojson && area.geojson.geometry &&
+                    ['Polygon', 'MultiPolygon'].includes(area.geojson.geometry.type) &&
+                    Array.isArray(area.geojson.geometry.coordinates)
+                );
+                if (!areeValide) throw new Error('Formato del backup non valido.');
+                if (!confirm(`Importare ${aree.length} aree e sostituire quelle attualmente salvate?`)) return;
+
+                const areePrecedenti = AppState.aree;
+                const areeEliminatePrecedenti = AppState.areeEliminate;
+                const selezionePrecedente = AppState.areaSelezionata;
+                AppState.aree = aree;
+                AppState.areeEliminate = Array.isArray(backup.areeEliminate)
+                    ? backup.areeEliminate.filter(id => typeof id === 'string')
+                    : AREE_INCLUSE_NELLO_SCRIPT.filter(area => !aree.some(importata => importata.id === area.id)).map(area => area.id);
+                if (!AppState.aree.some(area => area.id === AppState.areaSelezionata)) {
+                    AppState.areaSelezionata = null;
+                }
+                if (!salvaAree()) {
+                    AppState.aree = areePrecedenti;
+                    AppState.areeEliminate = areeEliminatePrecedenti;
+                    AppState.areaSelezionata = selezionePrecedente;
+                    throw new Error('Salvataggio non riuscito: le aree attuali sono state mantenute.');
+                }
+
+                if (AppState.areaSelezionata) selezionaArea(AppState.areaSelezionata);
+                else {
+                    localStorage.removeItem('mimit_area_selezionata');
+                    markersLayer.clearLayers();
+                    aggiornaTabella([]);
+                    document.getElementById('statsContainer').classList.add('hidden');
+                    document.getElementById('titoloTabellaArea').textContent = '';
+                    renderListaAree();
+                }
+                alert(`Importate ${aree.length} aree.`);
+            } catch (error) {
+                console.error(error);
+                alert(`Importazione non riuscita: ${error.message}`);
+            } finally {
+                event.target.value = '';
+            }
+        }
+
+        function apriDialogArea(nome, rinomina) {
+            const dialog = document.getElementById('areaDialog');
+            document.getElementById('areaDialogTitle').textContent = rinomina ? 'Rinomina area' : 'Nome area';
+            document.getElementById('salvaArea').textContent = rinomina ? 'Salva nome' : 'Salva area';
+            document.getElementById('areaNameInput').value = nome;
+            document.getElementById('areaDialogError').classList.add('hidden');
+            dialog.showModal();
+            document.getElementById('areaNameInput').focus();
+        }
+
+        function annullaAreaInCreazione() {
+            if (layerAreaInCreazione && map.hasLayer(layerAreaInCreazione)) {
+                map.removeLayer(layerAreaInCreazione);
+            }
+            layerAreaInCreazione = null;
+            areaInRinomina = null;
+        }
+
+        function salvaAreaDaDialog(event) {
+            event.preventDefault();
+            const nome = document.getElementById('areaNameInput').value.trim();
+            const errore = document.getElementById('areaDialogError');
+            if (!nome) {
+                errore.textContent = 'Inserisci un nome per l’area.';
+                errore.classList.remove('hidden');
+                document.getElementById('areaNameInput').focus();
+                return;
+            }
+
+            if (areaInRinomina) {
+                const nomePrecedente = areaInRinomina.nome;
+                areaInRinomina.nome = nome;
+                if (!salvaAree()) {
+                    areaInRinomina.nome = nomePrecedente;
+                    errore.textContent = 'Salvataggio non riuscito. Riprova.';
+                    errore.classList.remove('hidden');
+                    return;
+                }
+                areaInRinomina = null;
+                document.getElementById('areaDialog').close();
+                renderListaAree();
+                return;
+            }
+
+            const nuovaArea = {
+                id: Date.now().toString(),
+                nome,
+                geojson: layerAreaInCreazione.toGeoJSON()
+            };
+            AppState.aree.push(nuovaArea);
+            if (!salvaAree()) {
+                AppState.aree.pop();
+                errore.textContent = 'Salvataggio non riuscito. L’area è ancora sulla mappa; riprova.';
+                errore.classList.remove('hidden');
+                return;
+            }
+
+            map.removeLayer(layerAreaInCreazione);
+            layerAreaInCreazione = null;
+            document.getElementById('areaDialog').close();
+            renderListaAree();
+            selezionaArea(nuovaArea.id);
+        }
+
+        function rinominaArea(idArea) {
+            areaInRinomina = AppState.aree.find(area => area.id === idArea);
+            if (areaInRinomina) apriDialogArea(areaInRinomina.nome, true);
+        }
+
+        function renderListaAree() {
+            const container = document.getElementById('listaAree');
+            container.innerHTML = '';
+            
+            if (AppState.aree.length === 0) {
+                container.innerHTML = '<p class="text-xs text-gray-400 italic">Nessuna area salvata.</p>';
+            }
+
+            AppState.aree.forEach(area => {
+                const div = document.createElement('div');
+                div.className = `area-item flex justify-between items-center bg-white border p-2 rounded cursor-pointer ${AppState.areaSelezionata === area.id ? 'active' : ''}`;
+                div.onclick = () => selezionaArea(area.id);
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = "text-sm font-semibold text-gray-700 truncate flex-1 min-w-0";
+                nameSpan.textContent = area.nome;
+
+                const actions = document.createElement('div');
+                actions.className = 'flex items-center gap-1 ml-2';
+                const renameBtn = document.createElement('button');
+                renameBtn.type = 'button';
+                renameBtn.textContent = '✏️';
+                renameBtn.title = `Rinomina ${area.nome}`;
+                renameBtn.setAttribute('aria-label', `Rinomina ${area.nome}`);
+                renameBtn.className = 'text-blue-600 hover:bg-blue-100 p-1 rounded text-xs';
+                renameBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    rinominaArea(area.id);
+                };
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.innerHTML = '🗑️';
+                delBtn.title = `Elimina ${area.nome}`;
+                delBtn.setAttribute('aria-label', `Elimina ${area.nome}`);
+                delBtn.className = "text-red-500 hover:bg-red-100 p-1 rounded text-xs";
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    if(confirm(`Vuoi cancellare l'area ${area.nome}?`)) {
+                        cancellaArea(area.id);
+                    }
+                };
+
+                div.appendChild(nameSpan);
+                actions.appendChild(renameBtn);
+                actions.appendChild(delBtn);
+                div.appendChild(actions);
+                container.appendChild(div);
+            });
+
+            disegnaPoligoni();
+        }
+
+        function selezionaArea(idArea) {
+            AppState.areaSelezionata = idArea;
+            try {
+                localStorage.setItem('mimit_area_selezionata', idArea);
+            } catch (error) {
+                console.error('Impossibile salvare la selezione dell’area.', error);
+            }
+            renderListaAree();
+            aggiornaVista();
+            
+            const poligono = drawnLayersMap.get(idArea);
+            if (poligono && map) {
+                map.flyToBounds(poligono.getBounds(), { duration: 0.5, padding: [30,30] });
+            }
+        }
+
+        function cancellaArea(idArea) {
+            const areePrecedenti = AppState.aree;
+            const areeEliminatePrecedenti = AppState.areeEliminate;
+            AppState.aree = AppState.aree.filter(a => a.id !== idArea);
+            if (AREE_INCLUSE_NELLO_SCRIPT.some(area => area.id === idArea)) {
+                AppState.areeEliminate = [...new Set([...AppState.areeEliminate, idArea])];
+            }
+            if (!salvaAree()) {
+                AppState.aree = areePrecedenti;
+                AppState.areeEliminate = areeEliminatePrecedenti;
+                alert('Non è stato possibile salvare la modifica. L’area non è stata eliminata.');
+                return;
+            }
+            if (AppState.areaSelezionata === idArea) {
+                AppState.areaSelezionata = null;
+                try {
+                    localStorage.removeItem('mimit_area_selezionata');
+                } catch (error) {
+                    console.error('Impossibile aggiornare la selezione dell’area.', error);
+                }
+                if (markersLayer) markersLayer.clearLayers();
+                aggiornaTabella([]);
+                document.getElementById('statsContainer').classList.add('hidden');
+                document.getElementById('titoloTabellaArea').textContent = '';
+                document.getElementById('risultatiContatore').textContent = "Seleziona un'area.";
+            }
+            renderListaAree();
+        }
+
+        function disegnaPoligoni() {
+            if (typeof L === 'undefined' || !map || !poligoniLayer) return;
+            poligoniLayer.clearLayers();
+            drawnLayersMap.clear();
+
+            AppState.aree.forEach(area => {
+                const isSelected = (AppState.areaSelezionata === area.id);
+                const poly = L.geoJSON(area.geojson, {
+                    style: {
+                        color: isSelected ? '#ef4444' : '#3b82f6',
+                        weight: isSelected ? 3 : 2,
+                        fillColor: isSelected ? '#ef4444' : '#3b82f6',
+                        fillOpacity: 0.2
+                    }
+                });
+
+                poly.on('click', () => selezionaArea(area.id));
+                poly.bindTooltip(area.nome, { permanent: false, direction: 'center' });
+                
+                poly.addTo(poligoniLayer);
+                drawnLayersMap.set(area.id, poly); 
+            });
+        }
+
+        function checkCarburante(descrizioneCSV, filtroScelto) {
+            const lowerDesc = (descrizioneCSV || '').toLowerCase();
+            if (filtroScelto === 'benzina') return lowerDesc.includes('benzina') || lowerDesc.includes('super');
+            if (filtroScelto === 'gasolio') return lowerDesc.includes('gasolio') || lowerDesc.includes('diesel');
+            return false;
+        }
+
+        function dataPrezzoScaduta(dataAgg) {
+            const match = String(dataAgg || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+            if (!match) return true;
+
+            const data = new Date(
+                Number(match[3]), Number(match[2]) - 1, Number(match[1]),
+                Number(match[4] || 0), Number(match[5] || 0), Number(match[6] || 0)
+            );
+            return Number.isNaN(data.getTime()) || Date.now() - data.getTime() > 3 * 24 * 60 * 60 * 1000;
+        }
+
+        function aggiornaVista() {
+            if (!AppState.datiCaricati) return;
+            disegnaPoligoni();
+
+            if (!AppState.areaSelezionata) {
+                markersLayer.clearLayers();
+                aggiornaTabella([]);
+                document.getElementById('statsContainer').classList.add('hidden');
+                return;
+            }
+
+            const area = AppState.aree.find(a => a.id === AppState.areaSelezionata);
+            if (!area) return;
+
+            document.getElementById('titoloTabellaArea').textContent = `- ${area.nome}`;
+            
+            const geoArea = area.geojson;
+            let risultati = [];
+            let impiantiNellArea = [];
+
+            AppState.anagrafica.forEach((impianto, id) => {
+                const punto = turf.point([impianto.lng, impianto.lat]);
+                
+                if (turf.booleanPointInPolygon(punto, geoArea)) {
+                    impiantiNellArea.push(impianto);
+                    const prezziImpianto = AppState.prezzi.get(id) || [];
+                    const prezziValidi = prezziImpianto.filter(p => 
+                        checkCarburante(p.carburante, AppState.filtroCarburante)
+                    );
+
+                    if (prezziValidi.length > 0) {
+                        const migliorPrezzo = prezziValidi.reduce((min, cur) => cur.prezzo < min.prezzo ? cur : min, prezziValidi[0]);
+                        risultati.push({
+                            impianto: impianto,
+                            dettaglioPrezzo: migliorPrezzo
+                        });
+                    }
+                }
+            });
+
+            risultati.sort((a, b) => a.dettaglioPrezzo.prezzo - b.dettaglioPrezzo.prezzo);
+            const prezziPerImpianto = new Map(risultati.map(res => [res.impianto.id, res.dettaglioPrezzo]));
+            const primoPrezzoAggiornato = risultati.find(res => !dataPrezzoScaduta(res.dettaglioPrezzo.dataAgg)) || null;
+            const risultatiAggiornati = risultati.filter(res => !dataPrezzoScaduta(res.dettaglioPrezzo.dataAgg));
+            const risultatiVisualizzati = impiantiNellArea
+                .map(impianto => ({
+                    impianto,
+                    dettaglioPrezzo: prezziPerImpianto.get(impianto.id) || null
+                }))
+                .sort((a, b) => {
+                    if (!a.dettaglioPrezzo) return 1;
+                    if (!b.dettaglioPrezzo) return -1;
+                    return a.dettaglioPrezzo.prezzo - b.dettaglioPrezzo.prezzo;
+                });
+
+            markersLayer.clearLayers();
+            risultatiVisualizzati.forEach((res, index) => {
+                const isPrimoAggiornato = primoPrezzoAggiornato && primoPrezzoAggiornato.impianto.id === res.impianto.id;
+                const classeStatoMarker = !res.dettaglioPrezzo
+                    ? 'fuel-marker--no-price'
+                    : dataPrezzoScaduta(res.dettaglioPrezzo.dataAgg)
+                        ? 'fuel-marker--stale'
+                        : 'fuel-marker--updated';
+                const marker = L.marker([res.impianto.lat, res.impianto.lng], {
+                    icon: L.divIcon({
+                        className: 'fuel-marker-wrap',
+                        html: `<span class="fuel-marker ${classeStatoMarker}"></span>`,
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 23]
+                    }),
+                    zIndexOffset: isPrimoAggiornato ? 500 : 0
+                });
+                const dettaglioPrezzo = res.dettaglioPrezzo;
+                const tipoServ = dettaglioPrezzo
+                    ? (dettaglioPrezzo.isSelf === '1' ? 'Self Service' : 'Servito')
+                    : 'Non disponibile';
+                const htmlPopup = `
+                    <div class="text-sm">
+                        <strong class="text-blue-700">${res.impianto.bandiera}</strong> - ${res.impianto.nome}<br>
+                        ${res.impianto.indirizzo}, ${res.impianto.comune}<br>
+                        <hr class="my-1">
+                        <b>Prezzo:</b> ${dettaglioPrezzo ? `€${dettaglioPrezzo.prezzo.toFixed(3)}` : 'non disponibile con i filtri selezionati'}<br>
+                        ${dettaglioPrezzo ? `<b>Tipo:</b> ${dettaglioPrezzo.carburante} (${tipoServ})<br><b>Aggiornato:</b> ${dettaglioPrezzo.dataAgg || 'N/D'}` : ''}
+                    </div>
+                `;
+                marker.bindPopup(htmlPopup);
+                marker.addTo(markersLayer);
+                res.markerRef = marker;
+                res.isPrimoAggiornato = isPrimoAggiornato;
+            });
+
+            aggiornaTabella(risultatiVisualizzati);
+            aggiornaStatistiche(risultatiAggiornati);
+        }
+
+        function aggiornaTabella(risultati) {
+            const tbody = document.getElementById('tabellaCorpo');
+            const counter = document.getElementById('risultatiContatore');
+            tbody.innerHTML = '';
+
+            if (risultati.length === 0) {
+                counter.textContent = "Nessun impianto trovato con questi filtri.";
+                tbody.innerHTML = `<tr><td colspan="8" class="py-8 text-center text-gray-400">Nessun impianto soddisfa i criteri in quest'area.</td></tr>`;
+                return;
+            }
+
+            const risultatiConPrezzo = risultati.filter(res => res.dettaglioPrezzo);
+            const risultatiAggiornati = risultatiConPrezzo.filter(res => !dataPrezzoScaduta(res.dettaglioPrezzo.dataAgg));
+            counter.textContent = `${risultati.length} impianti nell'area, ${risultatiConPrezzo.length} con prezzo (${risultatiAggiornati.length} aggiornati)`;
+
+            risultati.forEach((res, index) => {
+                const tr = document.createElement('tr');
+                tr.className = `station-row ${index % 2 === 0 ? "bg-white" : "bg-gray-50"}`;
+                
+                if(res.isPrimoAggiornato) {
+                    tr.classList.add("bg-green-50");
+                    tr.classList.remove("bg-white", "bg-gray-50");
+                }
+
+                const srv = !res.dettaglioPrezzo ?
+                            '<span class="text-gray-400">-</span>' : res.dettaglioPrezzo.isSelf === '1' ? 
+                            '<span class="bg-blue-100 text-blue-800 text-[10px] px-2 py-1 rounded font-bold">SELF</span>' : 
+                            '<span class="bg-orange-100 text-orange-800 text-[10px] px-2 py-1 rounded font-bold">SERVITO</span>';
+
+                tr.innerHTML = `
+                    <td class="py-1.5 px-3 border-b text-center font-bold text-gray-500">${res.dettaglioPrezzo ? index + 1 : '-'}</td>
+                    <td class="py-1.5 px-3 border-b font-bold ${res.isPrimoAggiornato ? 'text-green-700 text-sm' : 'text-blue-700'}">${res.dettaglioPrezzo ? `€ ${res.dettaglioPrezzo.prezzo.toFixed(3)}` : '<span class="text-gray-400">N/D</span>'}</td>
+                    <td class="py-1.5 px-3 border-b">
+                        <div class="station-truncate text-xs font-bold text-gray-800 leading-tight" data-full-value="nome">${res.impianto.nome}</div>
+                        <div class="station-truncate text-[11px] text-gray-500" data-full-value="gestore">${res.impianto.gestore}</div>
+                    </td>
+                    <td class="py-1.5 px-3 border-b font-semibold text-gray-700">${res.impianto.bandiera}</td>
+                    <td class="py-1.5 px-3 border-b">
+                        <div class="station-truncate text-xs" data-full-value="indirizzo">${res.impianto.indirizzo}</div>
+                        <div class="station-truncate text-[11px] font-semibold text-gray-600" data-full-value="comune">${res.impianto.comune}</div>
+                    </td>
+                    <td class="py-1.5 px-3 border-b text-center">${srv}</td>
+                    <td class="py-1.5 px-3 border-b text-gray-600 text-center">${res.dettaglioPrezzo ? res.dettaglioPrezzo.carburante : '<span class="text-gray-400">Non disponibile</span>'}</td>
+                    <td class="py-1.5 px-3 border-b ${res.dettaglioPrezzo && dataPrezzoScaduta(res.dettaglioPrezzo.dataAgg) ? 'font-bold text-red-600' : 'text-gray-600'}" title="${res.dettaglioPrezzo && dataPrezzoScaduta(res.dettaglioPrezzo.dataAgg) ? 'Prezzo aggiornato da più di 3 giorni' : ''}">${res.dettaglioPrezzo ? res.dettaglioPrezzo.dataAgg || 'N/D' : '<span class="text-gray-400">N/D</span>'}</td>
+                `;
+
+                tr.querySelector('[data-full-value="nome"]').title = res.impianto.nome;
+                tr.querySelector('[data-full-value="gestore"]').title = res.impianto.gestore;
+                tr.querySelector('[data-full-value="indirizzo"]').title = res.impianto.indirizzo;
+                tr.querySelector('[data-full-value="comune"]').title = res.impianto.comune;
+
+                tr.style.cursor = 'pointer';
+                tr.addEventListener('mouseenter', () => {
+                    const markerElement = res.markerRef && res.markerRef.getElement();
+                    if (markerElement) {
+                        markerElement.querySelector('.fuel-marker')?.classList.add('is-hovered');
+                        res.markerRef.setZIndexOffset(1500);
+                    }
+                });
+                tr.addEventListener('mouseleave', () => {
+                    const markerElement = res.markerRef && res.markerRef.getElement();
+                    if (markerElement) {
+                        markerElement.querySelector('.fuel-marker')?.classList.remove('is-hovered');
+                        res.markerRef.setZIndexOffset(res.isPrimoAggiornato ? 500 : 0);
+                    }
+                });
+                tr.onclick = () => {
+                    map.setView([res.impianto.lat, res.impianto.lng], 15);
+                    if (res.markerRef) {
+                        res.markerRef.openPopup();
+                    }
+                };
+
+                tbody.appendChild(tr);
+            });
+        }
+
+        function aggiornaStatistiche(risultati) {
+            const box = document.getElementById('statsContainer');
+            if(risultati.length === 0) {
+                box.classList.add('hidden');
+                return;
+            }
+            box.classList.remove('hidden');
+
+            const prezzi = risultati.map(r => r.dettaglioPrezzo.prezzo);
+            const count = prezzi.length;
+            const min = prezzi[0];
+            
+            const somma = prezzi.reduce((a,b) => a+b, 0);
+            const media = somma / count;
+
+            let mediana;
+            const mid = Math.floor(count / 2);
+            if (count % 2 !== 0) {
+                mediana = prezzi[mid];
+            } else {
+                mediana = (prezzi[mid - 1] + prezzi[mid]) / 2;
+            }
+
+            document.getElementById('statCount').textContent = count;
+            document.getElementById('statMin').textContent = `€ ${min.toFixed(3)}`;
+            document.getElementById('statAvg').textContent = `€ ${media.toFixed(3)}`;
+            document.getElementById('statMed').textContent = `€ ${mediana.toFixed(3)}`;
+        }
+    </script>
+</body>
+</html>
